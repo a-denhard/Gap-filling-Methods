@@ -1,0 +1,391 @@
+---
+title: "BON-GROUND"
+author: "Alexis Denhard"
+date: "November 5, 2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list = ls()) #clear environment
+library(astsa)
+library(imputeTS)
+library(forecast)
+library(fields)
+```
+
+``` {r}
+# Ground data for NREL location
+
+library(lubridate) #yday function
+library(iemisc) #cosd function
+
+ground_dat = suppressWarnings(read.csv("D:/Work/Ground_measured_data/BON.csv"
+                                      , header = TRUE, sep = ",")) 
+
+# Remove night-time observations
+ground_dat = ground_dat[!(ground_dat$Solar.Zenith.Angle > 89.5),]
+# Remove missing values
+ground_dat = ground_dat[!(ground_dat$GHI < 0),]
+```
+
+``` {r}
+#doy - day of year
+doy = ground_dat$JDAY
+summary(doy)
+
+B = 2*pi*doy/365
+Rfact2 = 1.00011 + 0.034221 * cos(B)+ 0.00128*sin(B)+ 0.000719*cos(2*B)+0.000077*sin(2*B)
+
+#extraterrestrial irradiance
+ETRN = 1361*Rfact2
+
+SZA = ground_dat$Solar.Zenith.Angle
+
+ghi = ground_dat$GHI
+
+Kt = ghi / (ETRN * cosd(SZA))
+
+Kt.observed = as.ts(Kt)
+
+# put nice x and y labels 
+
+plot.ts(Kt.observed[1:1000], ylab = "Kt Observed")
+
+summary(Kt.observed)
+```
+
+``` {r}
+
+x = 1:length(Kt.observed)
+
+# na = c(rep(1, 319), rep(2, 114), rep(3, 132), rep(4, 164), rep(5, 48), rep(6, 4), 9, 48)
+
+n = c(319, 114, 132, 164, 48, 4, 1, 1) # first 7 col -- clear; next 7 col -- cloudy
+m = matrix(c(1:30, 31:60, 61:90, 91:120, 121:150, 151:180, 271:301, 1441:1471), ncol = 8)
+
+sum(n)
+
+ratio = vector()
+index = vector()
+
+set.seed(100)
+
+':=' <- function(lhs, rhs) {
+  frame <- parent.frame()
+  lhs <- as.list(substitute(lhs))
+  if (length(lhs) > 1)
+    lhs <- lhs[-1]
+  if (length(lhs) == 1) {
+    do.call(`=`, list(lhs[[1]], rhs), envir=frame)
+    return(invisible(NULL)) 
+  }
+  if (is.function(rhs) || is(rhs, 'formula'))
+    rhs <- list(rhs)
+  if (length(lhs) > length(rhs))
+    rhs <- c(rhs, rep(list(NULL), length(lhs) - length(rhs)))
+  for (i in 1:length(lhs))
+    do.call(`=`, list(lhs[[i]], rhs[[i]]), envir=frame)
+  return(invisible(NULL)) 
+}
+
+f <- function(x, n, m, max_iter, ratio, index) {
+    i = 0
+    z = which(!is.na(x))
+    repeat {
+      i = i+1
+      idx = sort(sample(seq_along(z), n))        # starting positions
+      dist = diff(c(idx, length(z)))             # check distance inbetween 
+      na_len = sample(m, n, replace = TRUE)      # lengths of NA-runs
+      ok = all(na_len < dist)                    # check overlap
+      if(ok | i == max_iter) break 
+    }
+    if(ok) {
+     return(list(replace(x, unlist(Map(":", idx, idx+na_len)), NA), ratio = append(ratio, na_len, after = length(ratio)), index = append(index, idx, after = length(index))))
+    } else {
+        cat("no solution found in", max_iter, "iterations")
+    }
+}
+
+c(x, ratio, index) := f(x, n[1], m[,1], max_iter = 1000, ratio, index)
+summary(x)
+length(ratio)
+
+c(x, ratio, index) := f(x, n[2], m[,2], max_iter = 100, ratio, index)
+summary(x)
+length(ratio)
+
+c(x, ratio, index) := f(x, n[3], m[,3], max_iter = 1000, ratio, index)
+summary(x)
+length(ratio)
+
+c(x, ratio, index) :=  f(x, n[4], m[,4], max_iter = 10000, ratio, index)
+summary(x)
+length(ratio)
+
+c(x, ratio, index) :=  f(x, n[5], m[,5], max_iter = 10000, ratio, index)
+summary(x)
+length(ratio)
+
+c(x, ratio, index) :=  f(x, n[6], m[,6], max_iter = 1000, ratio, index)
+summary(x)
+length(ratio)
+
+c(x, ratio, index) :=  f(x, n[7], m[,7], max_iter = 1000, ratio, index)
+summary(x)
+length(ratio)
+
+c(x, ratio, index) := f(x, n[8], m[,8], max_iter = 1000, ratio, index)
+summary(x)
+length(ratio)
+```
+
+# Set up bins
+
+``` {r}
+library(purrr) #detect_index function
+
+ratio.expand = vector()
+index.list = vector()
+
+for (i in 1:length(ratio)){
+  index.list = append(index.list, index[i]:(index[i]+ratio[i]-1))
+  ratio.expand = append(ratio.expand, rep(ratio[i], each = ratio[i]))
+}
+
+summary(index.list)
+summary(ratio.expand)
+
+na.matrix = matrix(c(ratio.expand, index.list), ncol = 2)
+na.sorted = na.matrix[order(na.matrix[,1]),]
+
+na.sorted = as.data.frame(na.sorted)
+ 
+k1 = detect_index(na.sorted$V1, function(x){x > 30})
+ 
+k2 = detect_index(na.sorted$V1, function(x){x > 60})
+ 
+k3 = detect_index(na.sorted$V1, function(x){x > 90})
+
+k4 = detect_index(na.sorted$V1, function(x){x > 120})
+ 
+k5 = detect_index(na.sorted$V1, function(x){x > 150})
+# 
+# #bins were edited to reflect these numbers
+# 
+bin1 = na.sorted[1:(k1-1),2] #1-30
+ 
+bin2 = na.sorted[k1:(k2-1),2] #31-60
+ 
+bin3 = na.sorted[k2:(k3-1),2] #61-90
+ 
+bin4 = na.sorted[k3:(k4-1),2] #91-120
+ 
+bin5 = na.sorted[k4:(k5-1),2] #121-150
+ 
+bin6 = na.sorted[k5:length(na.sorted),2] #150+
+```
+
+
+# Example 2.1: Perform linear interpolation
+
+``` {r}
+Kt[(is.na(x))] = NA
+ind = which(is.na(Kt))
+
+
+statsNA(Kt)
+
+Kt_filled4 = na_interpolation(Kt, 
+                        option = "linear")
+
+#ggplot_na_imputations(x.withNA = Kt[1:100], 
+ #                  x.withImputations = Kt_filled4[1:100],
+  #                 x.withTruth = Kt.observed[1:100], ylab = "Kt Value") 
+summary(Kt.observed)
+summary(Kt_filled4)
+
+MSPE4 = mean((Kt.observed[ind] - Kt_filled4[ind])^2)
+MAPE4 = mean(abs(Kt.observed[ind] - Kt_filled4[ind]))
+
+MSPE4*1000
+MAPE4*1000
+```
+
+``` {r}
+# bin 1
+
+MBE4.1 = mean(Kt_filled4[bin1] - Kt.observed[bin1])
+MBE_p4.1 = (mean(Kt_filled4[bin1] - Kt.observed[bin1])/mean(Kt.observed[bin1]))*100
+
+RMSE4.1 = sqrt(mean((Kt_filled4[bin1] - Kt.observed[bin1])^2))
+RMSE_p4.1 = sqrt((mean((Kt_filled4[bin1] - Kt.observed[bin1])^2))/(mean((Kt.observed[bin1])^2)))*100
+
+MAE4.1 = mean(abs(Kt_filled4[bin1] - Kt.observed[bin1]))
+MAE_p4.1 = (mean(abs(Kt_filled4[bin1] - Kt.observed[bin1]))/mean(Kt.observed[bin1]))*100
+
+# bin 2
+
+MBE4.2 = mean(Kt_filled4[bin2] - Kt.observed[bin2])
+MBE_p4.2 = (mean(Kt_filled4[bin2] - Kt.observed[bin2])/mean(Kt.observed[bin2]))*100
+
+RMSE4.2 = sqrt(mean((Kt_filled4[bin2] - Kt.observed[bin2])^2))
+RMSE_p4.2 = sqrt((mean((Kt_filled4[bin2] - Kt.observed[bin2])^2))/(mean((Kt.observed[bin2])^2)))*100
+
+MAE4.2 = mean(abs(Kt_filled4[bin2] - Kt.observed[bin2]))
+MAE_p4.2 = (mean(abs(Kt_filled4[bin2] - Kt.observed[bin2]))/mean(Kt.observed[bin2]))*100
+
+# bin 3
+
+MBE4.3 = mean(Kt_filled4[bin3] - Kt.observed[bin3])
+MBE_p4.3 = (mean(Kt_filled4[bin3] - Kt.observed[bin3])/mean(Kt.observed[bin3]))*100
+
+RMSE4.3 = sqrt(mean((Kt_filled4[bin3] - Kt.observed[bin3])^2))
+RMSE_p4.3 = sqrt((mean((Kt_filled4[bin3] - Kt.observed[bin3])^2))/(mean((Kt.observed[bin3])^2)))*100
+
+MAE4.3 = mean(abs(Kt_filled4[bin3] - Kt.observed[bin3]))
+MAE_p4.3 = (mean(abs(Kt_filled4[bin3] - Kt.observed[bin3]))/mean(Kt.observed[bin3]))*100
+
+#bin 4
+
+MBE4.4 = mean(Kt_filled4[bin4] - Kt.observed[bin4])
+MBE_p4.4 = (mean(Kt_filled4[bin4] - Kt.observed[bin4])/mean(Kt.observed[bin4]))*100
+
+RMSE4.4 = sqrt(mean((Kt_filled4[bin4] - Kt.observed[bin4])^2))
+RMSE_p4.4 = sqrt((mean((Kt_filled4[bin4] - Kt.observed[bin4])^2))/(mean((Kt.observed[bin4])^2)))*100
+
+MAE4.4 = mean(abs(Kt_filled4[bin4] - Kt.observed[bin4]))
+MAE_p4.4 = (mean(abs(Kt_filled4[bin4] - Kt.observed[bin4]))/mean(Kt.observed[bin4]))*100
+
+# bin 5
+
+MBE4.5 = mean(Kt_filled4[bin5] - Kt.observed[bin5])
+MBE_p4.5 = (mean(Kt_filled4[bin5] - Kt.observed[bin5])/mean(Kt.observed[bin5]))*100
+
+RMSE4.5 = sqrt(mean((Kt_filled4[bin5] - Kt.observed[bin5])^2))
+RMSE_p4.5 = sqrt((mean((Kt_filled4[bin5] - Kt.observed[bin5])^2))/(mean((Kt.observed[bin5])^2)))*100
+
+MAE4.5 = mean(abs(Kt_filled4[bin5] - Kt.observed[bin5]))
+MAE_p4.5 = (mean(abs(Kt_filled4[bin5] - Kt.observed[bin5]))/mean(Kt.observed[bin5]))*100
+
+# bin 6
+
+MBE4.6 = mean(Kt_filled4[bin6] - Kt.observed[bin6])
+MBE_p4.6 = (mean(Kt_filled4[bin6] - Kt.observed[bin6])/mean(Kt.observed[bin6]))*100
+
+RMSE4.6 = sqrt(mean((Kt_filled4[bin6] - Kt.observed[bin6])^2))
+RMSE_p4.6 = sqrt((mean((Kt_filled4[bin6] - Kt.observed[bin6])^2))/(mean((Kt.observed[bin6])^2)))*100
+
+MAE4.6 = mean(abs(Kt_filled4[bin6] - Kt.observed[bin6]))
+MAE_p4.6 = (mean(abs(Kt_filled4[bin6] - Kt.observed[bin6]))/mean(Kt.observed[bin6]))*100
+```
+
+# Example 2.3: Perform stine interpolation
+
+``` {r}
+Kt_filled6 = na_interpolation(Kt, 
+                        option = "stine")
+
+#plotNA.imputations(x.withNA = Kt[1:100], 
+#                   x.withImputations = Kt_filled6[1:100],
+#                   x.withTruth = Kt.observed[1:100], ylab = "Kt Value") 
+
+summary(Kt.observed)
+summary(Kt_filled6)
+
+MSPE6 = mean((Kt.observed[ind] - Kt_filled6[ind])^2)
+MAPE6 = mean(abs(Kt.observed[ind] - Kt_filled6[ind]))
+
+MSPE6*1000
+MAPE6*1000
+```
+
+
+``` {r}
+# bin 1
+
+MBE6.1 = mean(Kt_filled6[bin1] - Kt.observed[bin1])
+MBE_p6.1 = (mean(Kt_filled6[bin1] - Kt.observed[bin1])/mean(Kt.observed[bin1]))*100
+
+RMSE6.1 = sqrt(mean((Kt_filled6[bin1] - Kt.observed[bin1])^2))
+RMSE_p6.1 = sqrt((mean((Kt_filled6[bin1] - Kt.observed[bin1])^2))/(mean((Kt.observed[bin1])^2)))*100
+
+MAE6.1 = mean(abs(Kt_filled6[bin1] - Kt.observed[bin1]))
+MAE_p6.1 = (mean(abs(Kt_filled6[bin1] - Kt.observed[bin1]))/mean(Kt.observed[bin1]))*100
+
+# bin 2
+
+MBE6.2 = mean(Kt_filled6[bin2] - Kt.observed[bin2])
+MBE_p6.2 = (mean(Kt_filled6[bin2] - Kt.observed[bin2])/mean(Kt.observed[bin2]))*100
+
+RMSE6.2 = sqrt(mean((Kt_filled6[bin2] - Kt.observed[bin2])^2))
+RMSE_p6.2 = sqrt((mean((Kt_filled6[bin2] - Kt.observed[bin2])^2))/(mean((Kt.observed[bin2])^2)))*100
+
+MAE6.2 = mean(abs(Kt_filled6[bin2] - Kt.observed[bin2]))
+MAE_p6.2 = (mean(abs(Kt_filled6[bin2] - Kt.observed[bin2]))/mean(Kt.observed[bin2]))*100
+
+# bin 3
+
+MBE6.3 = mean(Kt_filled6[bin3] - Kt.observed[bin3])
+MBE_p6.3 = (mean(Kt_filled6[bin3] - Kt.observed[bin3])/mean(Kt.observed[bin3]))*100
+
+RMSE6.3 = sqrt(mean((Kt_filled6[bin3] - Kt.observed[bin3])^2))
+RMSE_p6.3 = sqrt((mean((Kt_filled6[bin3] - Kt.observed[bin3])^2))/(mean((Kt.observed[bin3])^2)))*100
+
+MAE6.3 = mean(abs(Kt_filled6[bin3] - Kt.observed[bin3]))
+MAE_p6.3 = (mean(abs(Kt_filled6[bin3] - Kt.observed[bin3]))/mean(Kt.observed[bin3]))*100
+
+# bin 4
+
+MBE6.4 = mean(Kt_filled6[bin4] - Kt.observed[bin4])
+MBE_p6.4 = (mean(Kt_filled6[bin4] - Kt.observed[bin4])/mean(Kt.observed[bin4]))*100
+
+RMSE6.4 = sqrt(mean((Kt_filled6[bin4] - Kt.observed[bin4])^2))
+RMSE_p6.4 = sqrt((mean((Kt_filled6[bin4] - Kt.observed[bin4])^2))/(mean((Kt.observed[bin4])^2)))*100
+
+MAE6.4 = mean(abs(Kt_filled6[bin4] - Kt.observed[bin4]))
+MAE_p6.4 = (mean(abs(Kt_filled6[bin4] - Kt.observed[bin4]))/mean(Kt.observed[bin4]))*100
+
+# bin 5
+
+MBE6.5 = mean(Kt_filled6[bin5] - Kt.observed[bin5])
+MBE_p6.5 = (mean(Kt_filled6[bin5] - Kt.observed[bin5])/mean(Kt.observed[bin5]))*100
+
+RMSE6.5 = sqrt(mean((Kt_filled6[bin5] - Kt.observed[bin5])^2))
+RMSE_p6.5 = sqrt((mean((Kt_filled6[bin5] - Kt.observed[bin5])^2))/(mean((Kt.observed[bin5])^2)))*100
+
+MAE6.5 = mean(abs(Kt_filled6[bin5] - Kt.observed[bin5]))
+MAE_p6.5 = (mean(abs(Kt_filled6[bin5] - Kt.observed[bin5]))/mean(Kt.observed[bin5]))*100
+
+# bin 6
+
+MBE6.6 = mean(Kt_filled6[bin6] - Kt.observed[bin6])
+MBE_p6.6 = (mean(Kt_filled6[bin6] - Kt.observed[bin6])/mean(Kt.observed[bin6]))*100
+
+RMSE6.6 = sqrt(mean((Kt_filled6[bin6] - Kt.observed[bin6])^2))
+RMSE_p6.6 = sqrt((mean((Kt_filled6[bin6] - Kt.observed[bin6])^2))/(mean((Kt.observed[bin6])^2)))*100
+
+MAE6.6 = mean(abs(Kt_filled6[bin6] - Kt.observed[bin6]))
+MAE_p6.6 = (mean(abs(Kt_filled6[bin6] - Kt.observed[bin6]))/mean(Kt.observed[bin6]))*100
+```
+
+``` {r}
+RMSE = cbind(rbind(round(RMSE4.1, 3), round(RMSE4.2, 3), round(RMSE4.3, 3), round(RMSE4.4, 3), round(RMSE4.5, 3), round(RMSE4.6, 3)), rbind(round(RMSE6.1, 3), round(RMSE6.2, 3), round(RMSE6.3, 3), round(RMSE6.4, 3), round(RMSE6.5, 3), round(RMSE6.6, 3)))
+
+RMSE_p = cbind(rbind(round(RMSE_p4.1, 1), round(RMSE_p4.2, 1), round(RMSE_p4.3, 1), round(RMSE_p4.4, 1), round(RMSE_p4.5, 1), round(RMSE_p4.6, 1)), rbind(round(RMSE_p6.1, 1), round(RMSE_p6.2, 1), round(RMSE_p6.3, 1), round(RMSE_p6.4, 1), round(RMSE_p6.5, 1), round(RMSE_p6.6, 1)))
+
+MAE = cbind(rbind(round(MAE4.1, 4), round(MAE4.2, 4), round(MAE4.3, 4), round(MAE4.4, 4), round(MAE4.5, 4), round(MAE4.6, 4)), rbind(round(MAE6.1, 4), round(MAE6.2, 1), round(MAE6.3, 4), round(MAE6.4, 4), round(MAE6.5, 4), round(MAE6.6, 4)))
+
+MAE_p = cbind(rbind(round(MAE_p4.1, 1), round(MAE_p4.2, 1), round(MAE_p4.3, 1), round(MAE_p4.4, 1), round(MAE_p4.5, 1), round(MAE_p4.6, 1)), rbind(round(MAE_p6.1, 2), round(MAE_p6.2, 1), round(MAE_p6.3, 1), round(MAE_p6.4, 1), round(MAE_p6.5, 1), round(MAE_p6.6, 1)))
+
+MBE = cbind(rbind(round(MBE4.1, 6), round(MBE4.2, 6), round(MBE4.3, 6), round(MBE4.4, 6), round(MBE4.5, 6), round(MBE4.6, 6)), rbind(round(MBE6.1, 6), round(MBE6.2, 6), round(MBE6.3, 6), round(MBE6.4, 6), round(MBE6.5, 6), round(MBE6.6, 6)))
+
+MBE_p = cbind(rbind(round(MBE_p4.1, 4), round(MBE_p4.2, 4), round(MBE_p4.3, 4), round(MBE_p4.4, 4), round(MBE_p4.5, 4), round(MBE_p4.6, 4)), rbind(round(MBE_p6.1, 4), round(MBE_p6.2, 4), round(MBE_p6.3, 4), round(MBE_p6.4, 4), round(MBE_p6.5, 4), round(MBE_p6.6, 4)))
+
+RMSE
+RMSE_p
+MAE
+MAE_p
+MBE
+MBE_p
+```

@@ -1,0 +1,925 @@
+---
+title: "FPK-SAT"
+author: "Alexis Denhard"
+date: "November 4, 2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list = ls()) #clear environment
+library(astsa)
+library(imputeTS)
+library(forecast)
+library(fields)
+```
+
+``` {r}
+library(lubridate) #yday function
+library(iemisc) #cosd function
+
+csdat2017 = suppressWarnings(read.csv("D:/Work/2017_data/FPK/FPK_48.29-105.06.csv"
+                                      , header = TRUE)) 
+
+#Remove first four NA rowws
+csdat2017 = csdat2017[-1,]
+csdat2017 = csdat2017[-1,]
+csdat2017 = csdat2017[-1,]
+csdat2017 = csdat2017[-1,]
+
+#doy - day of year
+df = as.Date(csdat2017$time_index)
+doy = yday(df)
+summary(doy)
+
+B = 2*pi*doy/365
+Rfact2 = 1.00011 + 0.034221 * cos(B)+ 0.00128*sin(B)+ 0.000719*cos(2*B)+0.000077*sin(2*B)
+
+#extraterrestrial irradiance
+ETRN = 1361*Rfact2
+
+SZA = csdat2017$solar_zenith_angle
+
+#set values to null for fill flag criteria
+csdat2017 = within(csdat2017, ghi[fill_flag != 0] <- NA)
+ghi = csdat2017$ghi
+
+Kt = ghi / (ETRN * cosd(SZA))
+
+Kt.observed = as.ts(Kt)
+
+plot.ts(Kt.observed[1:1000], ylab = "Kt Observed")
+
+index = which(is.na(Kt.observed))
+``` 
+
+``` {r}
+
+# Next we will remove 2000 observations based off the ratio of missing values for Kt.observed
+statsNA(Kt.observed)
+
+```
+
+``` {r}
+# create vector of statistics
+na = c(rep(1, 402), rep(2, 139), rep(3, 82), rep(4, 205), rep(5, 71), rep(6, 41), rep(7, 21), rep(8,6), rep(9,2), 10, rep(11,2), rep(12,2), rep(13,5), 14, rep(15,5), rep(16,6), 17, 18)
+summary(na)
+
+set.seed(100)
+
+# randomly mix up vector
+ratio = sample(na)
+
+# get indices of non null values of Kt.observed and sample 783 points
+non.na = which(!is.na(Kt.observed))
+index = sample(non.na, 
+               993, replace = FALSE) 
+
+Kt = Kt.observed
+
+#replace sample points wtih consecutive na points based on ratio
+for (i in 1:length(ratio)){
+  Kt = replace(Kt, list = index[i]:(index[i]+ratio[i]-1), rep(NA, ratio[i]))
+}
+
+#Kt.observed = replace(Kt.observed, list = index[1]:(index[1]+ratio[1]-1), rep(NA, ratio[1]))
+
+summary(Kt.observed)
+# Kt is syntethic set of missing observations
+summary(Kt)
+
+plot.ts(Kt[1:1000], ylab = "Kt")
+```
+
+# Set up bins to partition statistics
+
+``` {r}
+ratio.expand = vector()
+index.list = vector()
+
+for (i in 1:length(ratio)){
+  index.list = append(index.list, index[i]:(index[i]+ratio[i]-1))
+  ratio.expand = append(ratio.expand, rep(ratio[i], each = ratio[i]))
+}
+
+na.matrix = matrix(c(ratio.expand, index.list), ncol = 2)
+na.sorted = na.matrix[order(na.matrix[,1]),]
+
+bin1 = na.sorted[1:680,2] #bin one includes 1 and 2 consecutive na's
+na1 = which(is.na(Kt.observed[bin1]))
+bin1 = bin1[-na1]
+
+bin2 = na.sorted[681:2901, 2] #bin two includes 3 + consecutive na's
+summary(Kt.observed[bin2])
+na2 = which(is.na(Kt.observed[bin2]))
+bin2 = bin2[-na2]
+
+bin3 = na.sorted[1:926,2] #bin three inclueds 1-3 consecutive na's
+summary(Kt.observed[bin3])
+na3 = which(is.na(Kt.observed[bin3]))
+bin3 = bin3[-na3]
+
+bin4 = na.sorted[927:2901, 2] #bin four includes 4 + consecutive na's
+summary(Kt.observed[bin4])
+na4 = which(is.na(Kt.observed[bin4]))
+bin4 = bin4[-na4]
+
+bin5 = na.sorted[1:402,2] #bin five includes singular na values
+summary(Kt.observed[bin5])
+na5 = which(is.na(Kt.observed[bin5]))
+#bin5 = bin5[-na5]
+
+bin6 = na.sorted[403:2901, 2] #bin six includes 2+ consecutive na's
+summary(Kt.observed[bin6])
+na6 = which(is.na(Kt.observed[bin6]))
+bin6 = bin2[-na6]
+```
+
+
+# Example 1.1: Perform imputation with KalmanSmoother and using a structural model fitted by maximum likelihood
+
+``` {r}
+ind = which(!is.na(Kt.observed))
+
+Kt_filled1 = na_kalman(Kt, 
+                        model = "StructTS", smooth = TRUE)
+```
+
+``` {r}
+# bin 1
+
+MBE1.1 = mean(Kt_filled1[bin1] - Kt.observed[bin1])
+MBE_p1.1 = (mean(Kt_filled1[bin1] - Kt.observed[bin1])/mean(Kt.observed[bin1]))*100
+
+RMSE1.1 = sqrt(mean((Kt_filled1[bin1] - Kt.observed[bin1])^2))
+RMSE_p1.1 = sqrt((mean((Kt_filled1[bin1] - Kt.observed[bin1])^2))/(mean((Kt.observed[bin1])^2)))*100
+
+MAE1.1 = mean(abs(Kt_filled1[bin1] - Kt.observed[bin1]))
+MAE_p1.1 = (mean(abs(Kt_filled1[bin1] - Kt.observed[bin1]))/mean(Kt.observed[bin1]))*100
+
+# bin 2
+
+MBE1.2 = mean(Kt_filled1[bin2] - Kt.observed[bin2])
+MBE_p1.2 = (mean(Kt_filled1[bin2] - Kt.observed[bin2])/mean(Kt.observed[bin2]))*100
+
+RMSE1.2 = sqrt(mean((Kt_filled1[bin2] - Kt.observed[bin2])^2))
+RMSE_p1.2 = sqrt((mean((Kt_filled1[bin2] - Kt.observed[bin2])^2))/(mean((Kt.observed[bin2])^2)))*100
+
+MAE1.2 = mean(abs(Kt_filled1[bin2] - Kt.observed[bin2]))
+MAE_p1.2 = (mean(abs(Kt_filled1[bin2] - Kt.observed[bin2]))/mean(Kt.observed[bin2]))*100
+
+# bin 3
+
+MBE1.3 = mean(Kt_filled1[bin3] - Kt.observed[bin3])
+MBE_p1.3 = (mean(Kt_filled1[bin3] - Kt.observed[bin3])/mean(Kt.observed[bin3]))*100
+
+RMSE1.3 = sqrt(mean((Kt_filled1[bin3] - Kt.observed[bin3])^2))
+RMSE_p1.3 = sqrt((mean((Kt_filled1[bin3] - Kt.observed[bin3])^2))/(mean((Kt.observed[bin3])^2)))*100
+
+MAE1.3 = mean(abs(Kt_filled1[bin3] - Kt.observed[bin3]))
+MAE_p1.3 = (mean(abs(Kt_filled1[bin3] - Kt.observed[bin3]))/mean(Kt.observed[bin3]))*100
+
+# bin 4
+
+MBE1.4 = mean(Kt_filled1[bin4] - Kt.observed[bin4])
+MBE_p1.4 = (mean(Kt_filled1[bin4] - Kt.observed[bin4])/mean(Kt.observed[bin4]))*100
+
+RMSE1.4 = sqrt(mean((Kt_filled1[bin4] - Kt.observed[bin4])^2))
+RMSE_p1.4 = sqrt((mean((Kt_filled1[bin4] - Kt.observed[bin4])^2))/(mean((Kt.observed[bin4])^2)))*100
+
+MAE1.4 = mean(abs(Kt_filled1[bin4] - Kt.observed[bin4]))
+MAE_p1.4 = (mean(abs(Kt_filled1[bin4] - Kt.observed[bin4]))/mean(Kt.observed[bin4]))*100
+
+# bin 5
+
+MBE1.5 = mean(Kt_filled1[bin5] - Kt.observed[bin5])
+MBE_p1.5 = (mean(Kt_filled1[bin5] - Kt.observed[bin5])/mean(Kt.observed[bin5]))*100
+
+RMSE1.5 = sqrt(mean((Kt_filled1[bin5] - Kt.observed[bin5])^2))
+RMSE_p1.5 = sqrt((mean((Kt_filled1[bin5] - Kt.observed[bin5])^2))/(mean((Kt.observed[bin5])^2)))*100
+
+MAE1.5 = mean(abs(Kt_filled1[bin5] - Kt.observed[bin5]))
+MAE_p1.5 = (mean(abs(Kt_filled1[bin5] - Kt.observed[bin5]))/mean(Kt.observed[bin5]))*100
+
+# bin 6
+
+MBE1.6 = mean(Kt_filled1[bin6] - Kt.observed[bin6])
+MBE_p1.6 = (mean(Kt_filled1[bin6] - Kt.observed[bin6])/mean(Kt.observed[bin6]))*100
+
+RMSE1.6 = sqrt(mean((Kt_filled1[bin6] - Kt.observed[bin6])^2))
+RMSE_p1.6 = sqrt((mean((Kt_filled1[bin6] - Kt.observed[bin6])^2))/(mean((Kt.observed[bin6])^2)))*100
+
+MAE1.6 = mean(abs(Kt_filled1[bin6] - Kt.observed[bin6]))
+MAE_p1.6 = (mean(abs(Kt_filled1[bin6] - Kt.observed[bin6]))/mean(Kt.observed[bin6]))*100
+```
+
+# Example 1.2: Perform imputation with KalmanRun and state space representation of arima model
+
+``` {r}
+Kt_filled2 = na_kalman(Kt, 
+                        model = "auto.arima", smooth = TRUE)
+```
+
+``` {r}
+# bin 1
+
+MBE2.1 = mean(Kt_filled2[bin1] - Kt.observed[bin1])
+MBE_p2.1 = (mean(Kt_filled2[bin1] - Kt.observed[bin1])/mean(Kt.observed[bin1]))*100
+
+RMSE2.1 = sqrt(mean((Kt_filled2[bin1] - Kt.observed[bin1])^2))
+RMSE_p2.1 = sqrt((mean((Kt_filled2[bin1] - Kt.observed[bin1])^2))/(mean((Kt.observed[bin1])^2)))*100
+
+MAE2.1 = mean(abs(Kt_filled2[bin1] - Kt.observed[bin1]))
+MAE_p2.1 = (mean(abs(Kt_filled2[bin1] - Kt.observed[bin1]))/mean(Kt.observed[bin1]))*100
+
+# bin 2
+
+MBE2.2 = mean(Kt_filled2[bin2] - Kt.observed[bin2])
+MBE_p2.2 = (mean(Kt_filled2[bin2] - Kt.observed[bin2])/mean(Kt.observed[bin2]))*100
+
+RMSE2.2 = sqrt(mean((Kt_filled2[bin2] - Kt.observed[bin2])^2))
+RMSE_p2.2 = sqrt((mean((Kt_filled2[bin2] - Kt.observed[bin2])^2))/(mean((Kt.observed[bin2])^2)))*100
+
+MAE2.2 = mean(abs(Kt_filled2[bin2] - Kt.observed[bin2]))
+MAE_p2.2 = (mean(abs(Kt_filled2[bin2] - Kt.observed[bin2]))/mean(Kt.observed[bin2]))*100
+
+# bin 3
+
+MBE2.3 = mean(Kt_filled2[bin3] - Kt.observed[bin3])
+MBE_p2.3 = (mean(Kt_filled2[bin3] - Kt.observed[bin3])/mean(Kt.observed[bin3]))*100
+
+RMSE2.3 = sqrt(mean((Kt_filled2[bin3] - Kt.observed[bin3])^2))
+RMSE_p2.3 = sqrt((mean((Kt_filled2[bin3] - Kt.observed[bin3])^2))/(mean((Kt.observed[bin3])^2)))*100
+
+MAE2.3 = mean(abs(Kt_filled2[bin3] - Kt.observed[bin3]))
+MAE_p2.3 = (mean(abs(Kt_filled2[bin3] - Kt.observed[bin3]))/mean(Kt.observed[bin3]))*100
+
+# bin 4
+
+MBE2.4 = mean(Kt_filled2[bin4] - Kt.observed[bin4])
+MBE_p2.4 = (mean(Kt_filled2[bin4] - Kt.observed[bin4])/mean(Kt.observed[bin4]))*100
+
+RMSE2.4 = sqrt(mean((Kt_filled2[bin4] - Kt.observed[bin4])^2))
+RMSE_p2.4 = sqrt((mean((Kt_filled2[bin4] - Kt.observed[bin4])^2))/(mean((Kt.observed[bin4])^2)))*100
+
+MAE2.4 = mean(abs(Kt_filled2[bin4] - Kt.observed[bin4]))
+MAE_p2.4 = (mean(abs(Kt_filled2[bin4] - Kt.observed[bin4]))/mean(Kt.observed[bin4]))*100
+
+# bin 5
+
+MBE2.5 = mean(Kt_filled2[bin5] - Kt.observed[bin5])
+MBE_p2.5 = (mean(Kt_filled2[bin5] - Kt.observed[bin5])/mean(Kt.observed[bin5]))*100
+
+RMSE2.5 = sqrt(mean((Kt_filled2[bin5] - Kt.observed[bin5])^2))
+RMSE_p2.5 = sqrt((mean((Kt_filled2[bin5] - Kt.observed[bin5])^2))/(mean((Kt.observed[bin5])^2)))*100
+
+MAE2.5 = mean(abs(Kt_filled2[bin5] - Kt.observed[bin5]))
+MAE_p2.5 = (mean(abs(Kt_filled2[bin5] - Kt.observed[bin5]))/mean(Kt.observed[bin5]))*100
+
+# bin 6
+
+MBE2.6 = mean(Kt_filled2[bin6] - Kt.observed[bin6])
+MBE_p2.6 = (mean(Kt_filled2[bin6] - Kt.observed[bin6])/mean(Kt.observed[bin6]))*100
+
+RMSE2.6 = sqrt(mean((Kt_filled2[bin6] - Kt.observed[bin6])^2))
+RMSE_p2.6 = sqrt((mean((Kt_filled2[bin6] - Kt.observed[bin6])^2))/(mean((Kt.observed[bin6])^2)))*100
+
+MAE2.6 = mean(abs(Kt_filled2[bin6] - Kt.observed[bin6]))
+MAE_p2.6 = (mean(abs(Kt_filled2[bin6] - Kt.observed[bin6]))/mean(Kt.observed[bin6]))*100
+```
+
+# Example 1.3: Perform imputation with KalmanSmooth and StructTS model with additional parameters
+
+``` {r}
+Kt_filled3 = na_kalman(Kt, 
+                        model = "StructTS", smooth = TRUE, 
+                        type = "trend")
+```
+
+``` {r}
+# bin 1
+
+MBE3.1 = mean(Kt_filled3[bin1] - Kt.observed[bin1])
+MBE_p3.1 = (mean(Kt_filled3[bin1] - Kt.observed[bin1])/mean(Kt.observed[bin1]))*100
+
+RMSE3.1 = sqrt(mean((Kt_filled3[bin1] - Kt.observed[bin1])^2))
+RMSE_p3.1 = sqrt((mean((Kt_filled3[bin1] - Kt.observed[bin1])^2))/(mean((Kt.observed[bin1])^2)))*100
+
+MAE3.1 = mean(abs(Kt_filled3[bin1] - Kt.observed[bin1]))
+MAE_p3.1 = (mean(abs(Kt_filled3[bin1] - Kt.observed[bin1]))/mean(Kt.observed[bin1]))*100
+
+# bin 2
+
+MBE3.2 = mean(Kt_filled3[bin2] - Kt.observed[bin2])
+MBE_p3.2 = (mean(Kt_filled3[bin2] - Kt.observed[bin2])/mean(Kt.observed[bin2]))*100
+
+RMSE3.2 = sqrt(mean((Kt_filled3[bin2] - Kt.observed[bin2])^2))
+RMSE_p3.2 = sqrt((mean((Kt_filled3[bin2] - Kt.observed[bin2])^2))/(mean((Kt.observed[bin2])^2)))*100
+
+MAE3.2 = mean(abs(Kt_filled3[bin2] - Kt.observed[bin2]))
+MAE_p3.2 = (mean(abs(Kt_filled3[bin2] - Kt.observed[bin2]))/mean(Kt.observed[bin2]))*100
+
+# bin 3
+
+MBE3.3 = mean(Kt_filled3[bin3] - Kt.observed[bin3])
+MBE_p3.3 = (mean(Kt_filled3[bin3] - Kt.observed[bin3])/mean(Kt.observed[bin3]))*100
+
+RMSE3.3 = sqrt(mean((Kt_filled3[bin3] - Kt.observed[bin3])^2))
+RMSE_p3.3 = sqrt((mean((Kt_filled3[bin3] - Kt.observed[bin3])^2))/(mean((Kt.observed[bin3])^2)))*100
+
+MAE3.3 = mean(abs(Kt_filled3[bin3] - Kt.observed[bin3]))
+MAE_p3.3 = (mean(abs(Kt_filled3[bin3] - Kt.observed[bin3]))/mean(Kt.observed[bin3]))*100
+
+# bin 4
+
+MBE3.4 = mean(Kt_filled3[bin4] - Kt.observed[bin4])
+MBE_p3.4 = (mean(Kt_filled3[bin4] - Kt.observed[bin4])/mean(Kt.observed[bin4]))*100
+
+RMSE3.4 = sqrt(mean((Kt_filled3[bin4] - Kt.observed[bin4])^2))
+RMSE_p3.4 = sqrt((mean((Kt_filled3[bin4] - Kt.observed[bin4])^2))/(mean((Kt.observed[bin4])^2)))*100
+
+MAE3.4 = mean(abs(Kt_filled3[bin4] - Kt.observed[bin4]))
+MAE_p3.4 = (mean(abs(Kt_filled3[bin4] - Kt.observed[bin4]))/mean(Kt.observed[bin4]))*100
+
+# bin 5
+
+MBE3.5 = mean(Kt_filled3[bin5] - Kt.observed[bin5])
+MBE_p3.5 = (mean(Kt_filled3[bin5] - Kt.observed[bin5])/mean(Kt.observed[bin5]))*100
+
+RMSE3.5 = sqrt(mean((Kt_filled3[bin5] - Kt.observed[bin5])^2))
+RMSE_p3.5 = sqrt((mean((Kt_filled3[bin5] - Kt.observed[bin5])^2))/(mean((Kt.observed[bin5])^2)))*100
+
+MAE3.5 = mean(abs(Kt_filled3[bin5] - Kt.observed[bin5]))
+MAE_p3.5 = (mean(abs(Kt_filled3[bin5] - Kt.observed[bin5]))/mean(Kt.observed[bin5]))*100
+
+# bin 6
+
+MBE3.6 = mean(Kt_filled3[bin6] - Kt.observed[bin6])
+MBE_p3.6 = (mean(Kt_filled3[bin6] - Kt.observed[bin6])/mean(Kt.observed[bin6]))*100
+
+RMSE3.6 = sqrt(mean((Kt_filled3[bin6] - Kt.observed[bin6])^2))
+RMSE_p3.6 = sqrt((mean((Kt_filled3[bin6] - Kt.observed[bin6])^2))/(mean((Kt.observed[bin6])^2)))*100
+
+MAE3.6 = mean(abs(Kt_filled3[bin6] - Kt.observed[bin6]))
+MAE_p3.6 = (mean(abs(Kt_filled3[bin6] - Kt.observed[bin6]))/mean(Kt.observed[bin6]))*100
+```
+
+# Example 2.1: Perform linear interpolation
+
+``` {r}
+
+Kt_filled4 = na_interpolation(Kt, 
+                        option = "linear")
+
+#ggplot_na_imputations(x.withNA = Kt[1:100], 
+ #                  x.withImputations = Kt_filled4[1:100],
+  #                 x.withTruth = Kt.observed[1:100], ylab = "Kt Value") 
+summary(Kt.observed)
+summary(Kt_filled4)
+
+MSPE4 = mean((Kt.observed[ind] - Kt_filled4[ind])^2)
+MAPE4 = mean(abs(Kt.observed[ind] - Kt_filled4[ind]))
+
+MSPE4*1000
+MAPE4*1000
+```
+
+``` {r}
+# bin 1
+
+MBE4.1 = mean(Kt_filled4[bin1] - Kt.observed[bin1])
+MBE_p4.1 = (mean(Kt_filled4[bin1] - Kt.observed[bin1])/mean(Kt.observed[bin1]))*100
+
+RMSE4.1 = sqrt(mean((Kt_filled4[bin1] - Kt.observed[bin1])^2))
+RMSE_p4.1 = sqrt((mean((Kt_filled4[bin1] - Kt.observed[bin1])^2))/(mean((Kt.observed[bin1])^2)))*100
+
+MAE4.1 = mean(abs(Kt_filled4[bin1] - Kt.observed[bin1]))
+MAE_p4.1 = (mean(abs(Kt_filled4[bin1] - Kt.observed[bin1]))/mean(Kt.observed[bin1]))*100
+
+# bin 2
+
+MBE4.2 = mean(Kt_filled4[bin2] - Kt.observed[bin2])
+MBE_p4.2 = (mean(Kt_filled4[bin2] - Kt.observed[bin2])/mean(Kt.observed[bin2]))*100
+
+RMSE4.2 = sqrt(mean((Kt_filled4[bin2] - Kt.observed[bin2])^2))
+RMSE_p4.2 = sqrt((mean((Kt_filled4[bin2] - Kt.observed[bin2])^2))/(mean((Kt.observed[bin2])^2)))*100
+
+MAE4.2 = mean(abs(Kt_filled4[bin2] - Kt.observed[bin2]))
+MAE_p4.2 = (mean(abs(Kt_filled4[bin2] - Kt.observed[bin2]))/mean(Kt.observed[bin2]))*100
+
+# bin 3
+
+MBE4.3 = mean(Kt_filled4[bin3] - Kt.observed[bin3])
+MBE_p4.3 = (mean(Kt_filled4[bin3] - Kt.observed[bin3])/mean(Kt.observed[bin3]))*100
+
+RMSE4.3 = sqrt(mean((Kt_filled4[bin3] - Kt.observed[bin3])^2))
+RMSE_p4.3 = sqrt((mean((Kt_filled4[bin3] - Kt.observed[bin3])^2))/(mean((Kt.observed[bin3])^2)))*100
+
+MAE4.3 = mean(abs(Kt_filled4[bin3] - Kt.observed[bin3]))
+MAE_p4.3 = (mean(abs(Kt_filled4[bin3] - Kt.observed[bin3]))/mean(Kt.observed[bin3]))*100
+
+#bin 4
+
+MBE4.4 = mean(Kt_filled4[bin4] - Kt.observed[bin4])
+MBE_p4.4 = (mean(Kt_filled4[bin4] - Kt.observed[bin4])/mean(Kt.observed[bin4]))*100
+
+RMSE4.4 = sqrt(mean((Kt_filled4[bin4] - Kt.observed[bin4])^2))
+RMSE_p4.4 = sqrt((mean((Kt_filled4[bin4] - Kt.observed[bin4])^2))/(mean((Kt.observed[bin4])^2)))*100
+
+MAE4.4 = mean(abs(Kt_filled4[bin4] - Kt.observed[bin4]))
+MAE_p4.4 = (mean(abs(Kt_filled4[bin4] - Kt.observed[bin4]))/mean(Kt.observed[bin4]))*100
+
+# bin 5
+
+MBE4.5 = mean(Kt_filled4[bin5] - Kt.observed[bin5])
+MBE_p4.5 = (mean(Kt_filled4[bin5] - Kt.observed[bin5])/mean(Kt.observed[bin5]))*100
+
+RMSE4.5 = sqrt(mean((Kt_filled4[bin5] - Kt.observed[bin5])^2))
+RMSE_p4.5 = sqrt((mean((Kt_filled4[bin5] - Kt.observed[bin5])^2))/(mean((Kt.observed[bin5])^2)))*100
+
+MAE4.5 = mean(abs(Kt_filled4[bin5] - Kt.observed[bin5]))
+MAE_p4.5 = (mean(abs(Kt_filled4[bin5] - Kt.observed[bin5]))/mean(Kt.observed[bin5]))*100
+
+# bin 6
+
+MBE4.6 = mean(Kt_filled4[bin6] - Kt.observed[bin6])
+MBE_p4.6 = (mean(Kt_filled4[bin6] - Kt.observed[bin6])/mean(Kt.observed[bin6]))*100
+
+RMSE4.6 = sqrt(mean((Kt_filled4[bin6] - Kt.observed[bin6])^2))
+RMSE_p4.6 = sqrt((mean((Kt_filled4[bin6] - Kt.observed[bin6])^2))/(mean((Kt.observed[bin6])^2)))*100
+
+MAE4.6 = mean(abs(Kt_filled4[bin6] - Kt.observed[bin6]))
+MAE_p4.6 = (mean(abs(Kt_filled4[bin6] - Kt.observed[bin6]))/mean(Kt.observed[bin6]))*100
+```
+
+# Example 2.2: Perform spline interpolation
+
+``` {r}
+Kt_filled5 = na_interpolation(Kt, 
+                        option = "spline")
+```
+
+``` {r}
+# bin 1
+
+MBE5.1 = mean(Kt_filled5[bin1] - Kt.observed[bin1])
+MBE_p5.1 = (mean(Kt_filled5[bin1] - Kt.observed[bin1])/mean(Kt.observed[bin1]))*100
+
+RMSE5.1 = sqrt(mean((Kt_filled5[bin1] - Kt.observed[bin1])^2))
+RMSE_p5.1 = sqrt((mean((Kt_filled5[bin1] - Kt.observed[bin1])^2))/(mean((Kt.observed[bin1])^2)))*100
+
+MAE5.1 = mean(abs(Kt_filled5[bin1] - Kt.observed[bin1]))
+MAE_p5.1 = (mean(abs(Kt_filled5[bin1] - Kt.observed[bin1]))/mean(Kt.observed[bin1]))*100
+
+# bin 2
+
+MBE5.2 = mean(Kt_filled5[bin2] - Kt.observed[bin2])
+MBE_p5.2 = (mean(Kt_filled5[bin2] - Kt.observed[bin2])/mean(Kt.observed[bin2]))*100
+
+RMSE5.2 = sqrt(mean((Kt_filled5[bin2] - Kt.observed[bin2])^2))
+RMSE_p5.2 = sqrt((mean((Kt_filled5[bin2] - Kt.observed[bin2])^2))/(mean((Kt.observed[bin2])^2)))*100
+
+MAE5.2 = mean(abs(Kt_filled5[bin2] - Kt.observed[bin2]))
+MAE_p5.2 = (mean(abs(Kt_filled5[bin2] - Kt.observed[bin2]))/mean(Kt.observed[bin2]))*100
+
+# bin 3
+
+MBE5.3 = mean(Kt_filled5[bin3] - Kt.observed[bin3])
+MBE_p5.3 = (mean(Kt_filled5[bin3] - Kt.observed[bin3])/mean(Kt.observed[bin3]))*100
+
+RMSE5.3 = sqrt(mean((Kt_filled5[bin3] - Kt.observed[bin3])^2))
+RMSE_p5.3 = sqrt((mean((Kt_filled5[bin3] - Kt.observed[bin3])^2))/(mean((Kt.observed[bin3])^2)))*100
+
+MAE5.3 = mean(abs(Kt_filled5[bin3] - Kt.observed[bin3]))
+MAE_p5.3 = (mean(abs(Kt_filled5[bin3] - Kt.observed[bin3]))/mean(Kt.observed[bin3]))*100
+
+#bin 4
+
+MBE5.4 = mean(Kt_filled5[bin4] - Kt.observed[bin4])
+MBE_p5.4 = (mean(Kt_filled5[bin4] - Kt.observed[bin4])/mean(Kt.observed[bin4]))*100
+
+RMSE5.4 = sqrt(mean((Kt_filled5[bin4] - Kt.observed[bin4])^2))
+RMSE_p5.4 = sqrt((mean((Kt_filled5[bin4] - Kt.observed[bin4])^2))/(mean((Kt.observed[bin4])^2)))*100
+
+MAE5.4 = mean(abs(Kt_filled5[bin4] - Kt.observed[bin4]))
+MAE_p5.4 = (mean(abs(Kt_filled5[bin4] - Kt.observed[bin4]))/mean(Kt.observed[bin4]))*100
+
+# bin 5
+
+MBE5.5 = mean(Kt_filled5[bin5] - Kt.observed[bin5])
+MBE_p5.5 = (mean(Kt_filled5[bin5] - Kt.observed[bin5])/mean(Kt.observed[bin5]))*100
+
+RMSE5.5 = sqrt(mean((Kt_filled5[bin5] - Kt.observed[bin5])^2))
+RMSE_p5.5 = sqrt((mean((Kt_filled5[bin5] - Kt.observed[bin5])^2))/(mean((Kt.observed[bin5])^2)))*100
+
+MAE5.5 = mean(abs(Kt_filled5[bin5] - Kt.observed[bin5]))
+MAE_p5.5 = (mean(abs(Kt_filled5[bin5] - Kt.observed[bin5]))/mean(Kt.observed[bin5]))*100
+
+# bin 6
+
+MBE5.6 = mean(Kt_filled5[bin6] - Kt.observed[bin6])
+MBE_p5.6 = (mean(Kt_filled5[bin6] - Kt.observed[bin6])/mean(Kt.observed[bin6]))*100
+
+RMSE5.6 = sqrt(mean((Kt_filled5[bin6] - Kt.observed[bin6])^2))
+RMSE_p5.6 = sqrt((mean((Kt_filled5[bin6] - Kt.observed[bin6])^2))/(mean((Kt.observed[bin6])^2)))*100
+
+MAE5.6 = mean(abs(Kt_filled5[bin6] - Kt.observed[bin6]))
+MAE_p5.6 = (mean(abs(Kt_filled5[bin6] - Kt.observed[bin6]))/mean(Kt.observed[bin6]))*100
+```
+
+# Example 2.3: Perform stine interpolation
+
+``` {r}
+Kt_filled6 = na_interpolation(Kt, 
+                        option = "stine")
+
+#plotNA.imputations(x.withNA = Kt[1:100], 
+#                   x.withImputations = Kt_filled6[1:100],
+#                   x.withTruth = Kt.observed[1:100], ylab = "Kt Value") 
+
+summary(Kt.observed)
+summary(Kt_filled6)
+
+MSPE6 = mean((Kt.observed[ind] - Kt_filled6[ind])^2)
+MAPE6 = mean(abs(Kt.observed[ind] - Kt_filled6[ind]))
+
+MSPE6*1000
+MAPE6*1000
+```
+
+
+``` {r}
+# bin 1
+
+MBE6.1 = mean(Kt_filled6[bin1] - Kt.observed[bin1])
+MBE_p6.1 = (mean(Kt_filled6[bin1] - Kt.observed[bin1])/mean(Kt.observed[bin1]))*100
+
+RMSE6.1 = sqrt(mean((Kt_filled6[bin1] - Kt.observed[bin1])^2))
+RMSE_p6.1 = sqrt((mean((Kt_filled6[bin1] - Kt.observed[bin1])^2))/(mean((Kt.observed[bin1])^2)))*100
+
+MAE6.1 = mean(abs(Kt_filled6[bin1] - Kt.observed[bin1]))
+MAE_p6.1 = (mean(abs(Kt_filled6[bin1] - Kt.observed[bin1]))/mean(Kt.observed[bin1]))*100
+
+# bin 2
+
+MBE6.2 = mean(Kt_filled6[bin2] - Kt.observed[bin2])
+MBE_p6.2 = (mean(Kt_filled6[bin2] - Kt.observed[bin2])/mean(Kt.observed[bin2]))*100
+
+RMSE6.2 = sqrt(mean((Kt_filled6[bin2] - Kt.observed[bin2])^2))
+RMSE_p6.2 = sqrt((mean((Kt_filled6[bin2] - Kt.observed[bin2])^2))/(mean((Kt.observed[bin2])^2)))*100
+
+MAE6.2 = mean(abs(Kt_filled6[bin2] - Kt.observed[bin2]))
+MAE_p6.2 = (mean(abs(Kt_filled6[bin2] - Kt.observed[bin2]))/mean(Kt.observed[bin2]))*100
+
+# bin 3
+
+MBE6.3 = mean(Kt_filled6[bin3] - Kt.observed[bin3])
+MBE_p6.3 = (mean(Kt_filled6[bin3] - Kt.observed[bin3])/mean(Kt.observed[bin3]))*100
+
+RMSE6.3 = sqrt(mean((Kt_filled6[bin3] - Kt.observed[bin3])^2))
+RMSE_p6.3 = sqrt((mean((Kt_filled6[bin3] - Kt.observed[bin3])^2))/(mean((Kt.observed[bin3])^2)))*100
+
+MAE6.3 = mean(abs(Kt_filled6[bin3] - Kt.observed[bin3]))
+MAE_p6.3 = (mean(abs(Kt_filled6[bin3] - Kt.observed[bin3]))/mean(Kt.observed[bin3]))*100
+
+# bin 4
+
+MBE6.4 = mean(Kt_filled6[bin4] - Kt.observed[bin4])
+MBE_p6.4 = (mean(Kt_filled6[bin4] - Kt.observed[bin4])/mean(Kt.observed[bin4]))*100
+
+RMSE6.4 = sqrt(mean((Kt_filled6[bin4] - Kt.observed[bin4])^2))
+RMSE_p6.4 = sqrt((mean((Kt_filled6[bin4] - Kt.observed[bin4])^2))/(mean((Kt.observed[bin4])^2)))*100
+
+MAE6.4 = mean(abs(Kt_filled6[bin4] - Kt.observed[bin4]))
+MAE_p6.4 = (mean(abs(Kt_filled6[bin4] - Kt.observed[bin4]))/mean(Kt.observed[bin4]))*100
+
+# bin 5
+
+MBE6.5 = mean(Kt_filled6[bin5] - Kt.observed[bin5])
+MBE_p6.5 = (mean(Kt_filled6[bin5] - Kt.observed[bin5])/mean(Kt.observed[bin5]))*100
+
+RMSE6.5 = sqrt(mean((Kt_filled6[bin5] - Kt.observed[bin5])^2))
+RMSE_p6.5 = sqrt((mean((Kt_filled6[bin5] - Kt.observed[bin5])^2))/(mean((Kt.observed[bin5])^2)))*100
+
+MAE6.5 = mean(abs(Kt_filled6[bin5] - Kt.observed[bin5]))
+MAE_p6.5 = (mean(abs(Kt_filled6[bin5] - Kt.observed[bin5]))/mean(Kt.observed[bin5]))*100
+
+# bin 6
+
+MBE6.6 = mean(Kt_filled6[bin6] - Kt.observed[bin6])
+MBE_p6.6 = (mean(Kt_filled6[bin6] - Kt.observed[bin6])/mean(Kt.observed[bin6]))*100
+
+RMSE6.6 = sqrt(mean((Kt_filled6[bin6] - Kt.observed[bin6])^2))
+RMSE_p6.6 = sqrt((mean((Kt_filled6[bin6] - Kt.observed[bin6])^2))/(mean((Kt.observed[bin6])^2)))*100
+
+MAE6.6 = mean(abs(Kt_filled6[bin6] - Kt.observed[bin6]))
+MAE_p6.6 = (mean(abs(Kt_filled6[bin6] - Kt.observed[bin6]))/mean(Kt.observed[bin6]))*100
+```
+
+
+# Example 4.1: Perform imputation with simple moving average
+
+``` {r}
+# default
+
+Kt_filled9 = na_ma(Kt, weighting = "simple")
+```
+
+``` {r}
+# bin 1
+
+MBE9.1 = mean(Kt_filled9[bin1] - Kt.observed[bin1])
+MBE_p9.1 = (mean(Kt_filled9[bin1] - Kt.observed[bin1])/mean(Kt.observed[bin1]))*100
+
+RMSE9.1 = sqrt(mean((Kt_filled9[bin1] - Kt.observed[bin1])^2))
+RMSE_p9.1 = sqrt((mean((Kt_filled9[bin1] - Kt.observed[bin1])^2))/(mean((Kt.observed[bin1])^2)))*100
+
+MAE9.1 = mean(abs(Kt_filled9[bin1] - Kt.observed[bin1]))
+MAE_p9.1 = (mean(abs(Kt_filled9[bin1] - Kt.observed[bin1]))/mean(Kt.observed[bin1]))*100
+
+# bin 2
+
+MBE9.2 = mean(Kt_filled9[bin2] - Kt.observed[bin2])
+MBE_p9.2 = (mean(Kt_filled9[bin2] - Kt.observed[bin2])/mean(Kt.observed[bin2]))*100
+
+RMSE9.2 = sqrt(mean((Kt_filled9[bin2] - Kt.observed[bin2])^2))
+RMSE_p9.2 = sqrt((mean((Kt_filled9[bin2] - Kt.observed[bin2])^2))/(mean((Kt.observed[bin2])^2)))*100
+
+MAE9.2 = mean(abs(Kt_filled9[bin2] - Kt.observed[bin2]))
+MAE_p9.2 = (mean(abs(Kt_filled9[bin2] - Kt.observed[bin2]))/mean(Kt.observed[bin2]))*100
+
+# bin 3
+
+MBE9.3 = mean(Kt_filled9[bin3] - Kt.observed[bin3])
+MBE_p9.3 = (mean(Kt_filled9[bin3] - Kt.observed[bin3])/mean(Kt.observed[bin3]))*100
+
+RMSE9.3 = sqrt(mean((Kt_filled9[bin3] - Kt.observed[bin3])^2))
+RMSE_p9.3 = sqrt((mean((Kt_filled9[bin3] - Kt.observed[bin3])^2))/(mean((Kt.observed[bin3])^2)))*100
+
+MAE9.3 = mean(abs(Kt_filled9[bin3] - Kt.observed[bin3]))
+MAE_p9.3 = (mean(abs(Kt_filled9[bin3] - Kt.observed[bin3]))/mean(Kt.observed[bin3]))*100
+
+# bin 4
+
+MBE9.4 = mean(Kt_filled9[bin4] - Kt.observed[bin4])
+MBE_p9.4 = (mean(Kt_filled9[bin4] - Kt.observed[bin4])/mean(Kt.observed[bin4]))*100
+
+RMSE9.4 = sqrt(mean((Kt_filled9[bin4] - Kt.observed[bin4])^2))
+RMSE_p9.4 = sqrt((mean((Kt_filled9[bin4] - Kt.observed[bin4])^2))/(mean((Kt.observed[bin4])^2)))*100
+
+MAE9.4 = mean(abs(Kt_filled9[bin4] - Kt.observed[bin4]))
+MAE_p9.4 = (mean(abs(Kt_filled9[bin4] - Kt.observed[bin4]))/mean(Kt.observed[bin4]))*100
+
+# bin 5
+
+MBE9.5 = mean(Kt_filled9[bin5] - Kt.observed[bin5])
+MBE_p9.5 = (mean(Kt_filled9[bin5] - Kt.observed[bin5])/mean(Kt.observed[bin5]))*100
+
+RMSE9.5 = sqrt(mean((Kt_filled9[bin5] - Kt.observed[bin5])^2))
+RMSE_p9.5 = sqrt((mean((Kt_filled9[bin5] - Kt.observed[bin5])^2))/(mean((Kt.observed[bin5])^2)))*100
+
+MAE9.5 = mean(abs(Kt_filled9[bin5] - Kt.observed[bin5]))
+MAE_p9.5 = (mean(abs(Kt_filled9[bin5] - Kt.observed[bin5]))/mean(Kt.observed[bin5]))*100
+
+# bin 6
+
+MBE9.6 = mean(Kt_filled9[bin6] - Kt.observed[bin6])
+MBE_p9.6 = (mean(Kt_filled9[bin6] - Kt.observed[bin6])/mean(Kt.observed[bin6]))*100
+
+RMSE9.6 = sqrt(mean((Kt_filled9[bin6] - Kt.observed[bin6])^2))
+RMSE_p9.6 = sqrt((mean((Kt_filled9[bin6] - Kt.observed[bin6])^2))/(mean((Kt.observed[bin6])^2)))*100
+
+MAE9.6 = mean(abs(Kt_filled9[bin6] - Kt.observed[bin6]))
+MAE_p9.6 = (mean(abs(Kt_filled9[bin6] - Kt.observed[bin6]))/mean(Kt.observed[bin6]))*100
+```
+
+# Example 4.2: Perform imputation with linear weighted moving average
+
+``` {r}
+# default
+
+Kt_filled10 = na_ma(Kt, weighting = "linear")
+```
+
+
+``` {r}
+# bin 1
+
+MBE10.1 = mean(Kt_filled10[bin1] - Kt.observed[bin1])
+MBE_p10.1 = (mean(Kt_filled10[bin1] - Kt.observed[bin1])/mean(Kt.observed[bin1]))*100
+
+RMSE10.1 = sqrt(mean((Kt_filled10[bin1] - Kt.observed[bin1])^2))
+RMSE_p10.1 = sqrt((mean((Kt_filled10[bin1] - Kt.observed[bin1])^2))/(mean((Kt.observed[bin1])^2)))*100
+
+MAE10.1 = mean(abs(Kt_filled10[bin1] - Kt.observed[bin1]))
+MAE_p10.1 = (mean(abs(Kt_filled10[bin1] - Kt.observed[bin1]))/mean(Kt.observed[bin1]))*100
+
+# bin 2
+
+MBE10.2 = mean(Kt_filled10[bin2] - Kt.observed[bin2])
+MBE_p10.2 = (mean(Kt_filled10[bin2] - Kt.observed[bin2])/mean(Kt.observed[bin2]))*100
+
+RMSE10.2 = sqrt(mean((Kt_filled10[bin2] - Kt.observed[bin2])^2))
+RMSE_p10.2 = sqrt((mean((Kt_filled10[bin2] - Kt.observed[bin2])^2))/(mean((Kt.observed[bin2])^2)))*100
+
+MAE10.2 = mean(abs(Kt_filled10[bin2] - Kt.observed[bin2]))
+MAE_p10.2 = (mean(abs(Kt_filled10[bin2] - Kt.observed[bin2]))/mean(Kt.observed[bin2]))*100
+
+# bin 3
+
+MBE10.3 = mean(Kt_filled10[bin3] - Kt.observed[bin3])
+MBE_p10.3 = (mean(Kt_filled10[bin3] - Kt.observed[bin3])/mean(Kt.observed[bin3]))*100
+
+RMSE10.3 = sqrt(mean((Kt_filled10[bin3] - Kt.observed[bin3])^2))
+RMSE_p10.3 = sqrt((mean((Kt_filled10[bin3] - Kt.observed[bin3])^2))/(mean((Kt.observed[bin3])^2)))*100
+
+MAE10.3 = mean(abs(Kt_filled10[bin3] - Kt.observed[bin3]))
+MAE_p10.3 = (mean(abs(Kt_filled10[bin3] - Kt.observed[bin3]))/mean(Kt.observed[bin3]))*100
+
+# bin 4
+
+MBE10.4 = mean(Kt_filled10[bin4] - Kt.observed[bin4])
+MBE_p10.4 = (mean(Kt_filled10[bin4] - Kt.observed[bin4])/mean(Kt.observed[bin4]))*100
+
+RMSE10.4 = sqrt(mean((Kt_filled10[bin4] - Kt.observed[bin4])^2))
+RMSE_p10.4 = sqrt((mean((Kt_filled10[bin4] - Kt.observed[bin4])^2))/(mean((Kt.observed[bin4])^2)))*100
+
+MAE10.4 = mean(abs(Kt_filled10[bin4] - Kt.observed[bin4]))
+MAE_p10.4 = (mean(abs(Kt_filled10[bin4] - Kt.observed[bin4]))/mean(Kt.observed[bin4]))*100
+
+# bin 5
+
+MBE10.5 = mean(Kt_filled10[bin5] - Kt.observed[bin5])
+MBE_p10.5 = (mean(Kt_filled10[bin5] - Kt.observed[bin5])/mean(Kt.observed[bin5]))*100
+
+RMSE10.5 = sqrt(mean((Kt_filled10[bin5] - Kt.observed[bin5])^2))
+RMSE_p10.5 = sqrt((mean((Kt_filled10[bin5] - Kt.observed[bin5])^2))/(mean((Kt.observed[bin5])^2)))*100
+
+MAE10.5 = mean(abs(Kt_filled10[bin5] - Kt.observed[bin5]))
+MAE_p10.5 = (mean(abs(Kt_filled10[bin5] - Kt.observed[bin5]))/mean(Kt.observed[bin5]))*100
+
+# bin 6
+
+MBE10.6 = mean(Kt_filled10[bin6] - Kt.observed[bin6])
+MBE_p10.6 = (mean(Kt_filled10[bin6] - Kt.observed[bin6])/mean(Kt.observed[bin6]))*100
+
+RMSE10.6 = sqrt(mean((Kt_filled10[bin6] - Kt.observed[bin6])^2))
+RMSE_p10.6 = sqrt((mean((Kt_filled10[bin6] - Kt.observed[bin6])^2))/(mean((Kt.observed[bin6])^2)))*100
+
+MAE10.6 = mean(abs(Kt_filled10[bin6] - Kt.observed[bin6]))
+MAE_p10.6 = (mean(abs(Kt_filled10[bin6] - Kt.observed[bin6]))/mean(Kt.observed[bin6]))*100
+```
+
+# Example 4.3: Perform imputation with exponential weighted moving average
+
+``` {r}
+# default
+
+Kt_filled11 = na_ma(Kt, weighting = "exponential")
+```
+
+``` {r}
+# bin 1
+
+MBE11.1 = mean(Kt_filled11[bin1] - Kt.observed[bin1])
+MBE_p11.1 = (mean(Kt_filled11[bin1] - Kt.observed[bin1])/mean(Kt.observed[bin1]))*100
+
+RMSE11.1 = sqrt(mean((Kt_filled11[bin1] - Kt.observed[bin1])^2))
+RMSE_p11.1 = sqrt((mean((Kt_filled11[bin1] - Kt.observed[bin1])^2))/(mean((Kt.observed[bin1])^2)))*100
+
+MAE11.1 = mean(abs(Kt_filled11[bin1] - Kt.observed[bin1]))
+MAE_p11.1 = (mean(abs(Kt_filled11[bin1] - Kt.observed[bin1]))/mean(Kt.observed[bin1]))*100
+
+# bin 2
+
+MBE11.2 = mean(Kt_filled11[bin2] - Kt.observed[bin2])
+MBE_p11.2 = (mean(Kt_filled11[bin2] - Kt.observed[bin2])/mean(Kt.observed[bin2]))*100
+
+RMSE11.2 = sqrt(mean((Kt_filled11[bin2] - Kt.observed[bin2])^2))
+RMSE_p11.2 = sqrt((mean((Kt_filled11[bin2] - Kt.observed[bin2])^2))/(mean((Kt.observed[bin2])^2)))*100
+
+MAE11.2 = mean(abs(Kt_filled11[bin2] - Kt.observed[bin2]))
+MAE_p11.2 = (mean(abs(Kt_filled11[bin2] - Kt.observed[bin2]))/mean(Kt.observed[bin2]))*100
+
+# bin 3
+
+MBE11.3 = mean(Kt_filled11[bin3] - Kt.observed[bin3])
+MBE_p11.3 = (mean(Kt_filled11[bin3] - Kt.observed[bin3])/mean(Kt.observed[bin3]))*100
+
+RMSE11.3 = sqrt(mean((Kt_filled11[bin3] - Kt.observed[bin3])^2))
+RMSE_p11.3 = sqrt((mean((Kt_filled11[bin3] - Kt.observed[bin3])^2))/(mean((Kt.observed[bin3])^2)))*100
+
+MAE11.3 = mean(abs(Kt_filled11[bin3] - Kt.observed[bin3]))
+MAE_p11.3 = (mean(abs(Kt_filled11[bin3] - Kt.observed[bin3]))/mean(Kt.observed[bin3]))*100
+
+# bin 4
+
+MBE11.4 = mean(Kt_filled11[bin4] - Kt.observed[bin4])
+MBE_p11.4 = (mean(Kt_filled11[bin4] - Kt.observed[bin4])/mean(Kt.observed[bin4]))*100
+
+RMSE11.4 = sqrt(mean((Kt_filled11[bin4] - Kt.observed[bin4])^2))
+RMSE_p11.4 = sqrt((mean((Kt_filled11[bin4] - Kt.observed[bin4])^2))/(mean((Kt.observed[bin4])^2)))*100
+
+MAE11.4 = mean(abs(Kt_filled11[bin4] - Kt.observed[bin4]))
+MAE_p11.4 = (mean(abs(Kt_filled11[bin4] - Kt.observed[bin4]))/mean(Kt.observed[bin4]))*100
+
+# bin 5
+
+MBE11.5 = mean(Kt_filled11[bin5] - Kt.observed[bin5])
+MBE_p11.5 = (mean(Kt_filled11[bin5] - Kt.observed[bin5])/mean(Kt.observed[bin5]))*100
+
+RMSE11.5 = sqrt(mean((Kt_filled11[bin5] - Kt.observed[bin5])^2))
+RMSE_p11.5 = sqrt((mean((Kt_filled11[bin5] - Kt.observed[bin5])^2))/(mean((Kt.observed[bin5])^2)))*100
+
+MAE11.5 = mean(abs(Kt_filled11[bin5] - Kt.observed[bin5]))
+MAE_p11.5 = (mean(abs(Kt_filled11[bin5] - Kt.observed[bin5]))/mean(Kt.observed[bin5]))*100
+
+# bin 6
+
+MBE11.6 = mean(Kt_filled11[bin6] - Kt.observed[bin6])
+MBE_p11.6 = (mean(Kt_filled11[bin6] - Kt.observed[bin6])/mean(Kt.observed[bin6]))*100
+
+RMSE11.6 = sqrt(mean((Kt_filled11[bin6] - Kt.observed[bin6])^2))
+RMSE_p11.6 = sqrt((mean((Kt_filled11[bin6] - Kt.observed[bin6])^2))/(mean((Kt.observed[bin6])^2)))*100
+
+MAE11.6 = mean(abs(Kt_filled11[bin6] - Kt.observed[bin6]))
+MAE_p11.6 = (mean(abs(Kt_filled11[bin6] - Kt.observed[bin6]))/mean(Kt.observed[bin6]))*100
+```
+
+``` {r}
+RMSE = cbind(rbind(round(RMSE4.1*1000, 1), round(RMSE4.2*1000, 1), round(RMSE4.3*1000, 1), round(RMSE4.4*1000, 1), round(RMSE4.5*1000, 1), round(RMSE4.6*1000, 1)), 
+             rbind(round(RMSE6.1*1000, 1), round(RMSE6.2*1000, 1), round(RMSE6.3*1000, 1), round(RMSE6.4*1000, 1), round(RMSE6.5*1000, 1), round(RMSE6.6*1000, 1)),
+             rbind(round(RMSE1.1*1000, 1), round(RMSE1.2*1000, 1), round(RMSE1.3*1000, 1), round(RMSE1.4*1000, 1), round(RMSE1.5*1000, 1), round(RMSE1.6*1000, 1)),
+             rbind(round(RMSE2.1*1000, 1), round(RMSE2.2*1000, 1), round(RMSE2.3*1000, 1), round(RMSE2.4*1000, 1), round(RMSE2.5*1000, 1), round(RMSE2.6*1000, 1)),
+             rbind(round(RMSE5.1*1000, 1), round(RMSE5.2*1000, 1), round(RMSE5.3*1000, 1), round(RMSE5.4*1000, 1), round(RMSE5.5*1000, 1), round(RMSE5.6*1000, 1)),
+             rbind(round(RMSE9.1*1000, 1), round(RMSE9.2*1000, 1), round(RMSE9.3*1000, 1), round(RMSE9.4*1000, 1), round(RMSE9.5*1000, 1), round(RMSE9.6*1000, 1)),
+             rbind(round(RMSE10.1*1000, 1), round(RMSE10.2*1000, 1), round(RMSE10.3*1000, 1), round(RMSE10.4*1000, 1), round(RMSE10.5*1000, 1), round(RMSE10.6*1000, 1)),
+             rbind(round(RMSE11.1*1000, 1), round(RMSE11.2*1000, 1), round(RMSE11.3*1000, 1), round(RMSE11.4*1000, 1), round(RMSE11.5*1000, 1), round(RMSE11.6*1000, 1)))
+
+
+
+RMSE_p = cbind(rbind(round(RMSE_p4.1*1000, 1), round(RMSE_p4.2*1000, 1), round(RMSE_p4.3*1000, 1), round(RMSE_p4.4*1000, 1), round(RMSE_p4.5*1000, 1), round(RMSE_p4.6*1000, 1)), 
+             rbind(round(RMSE_p6.1*1000, 1), round(RMSE_p6.2*1000, 1), round(RMSE_p6.3*1000, 1), round(RMSE_p6.4*1000, 1), round(RMSE_p6.5*1000, 1), round(RMSE_p6.6*1000, 1)),
+             rbind(round(RMSE_p1.1*1000, 1), round(RMSE_p1.2*1000, 1), round(RMSE_p1.3*1000, 1), round(RMSE_p1.4*1000, 1), round(RMSE_p1.5*1000, 1), round(RMSE_p1.6*1000, 1)),
+             rbind(round(RMSE_p2.1*1000, 1), round(RMSE_p2.2*1000, 1), round(RMSE_p2.3*1000, 1), round(RMSE_p2.4*1000, 1), round(RMSE_p2.5*1000, 1), round(RMSE_p2.6*1000, 1)),
+             rbind(round(RMSE_p5.1*1000, 1), round(RMSE_p5.2*1000, 1), round(RMSE_p5.3*1000, 1), round(RMSE_p5.4*1000, 1), round(RMSE_p5.5*1000, 1), round(RMSE_p5.6*1000, 1)),
+             rbind(round(RMSE_p9.1*1000, 1), round(RMSE_p9.2*1000, 1), round(RMSE_p9.3*1000, 1), round(RMSE_p9.4*1000, 1), round(RMSE_p9.5*1000, 1), round(RMSE_p9.6*1000, 1)),
+             rbind(round(RMSE_p10.1*1000, 1), round(RMSE_p10.2*1000, 1), round(RMSE_p10.3*1000, 1), round(RMSE_p10.4*1000, 1), round(RMSE_p10.5*1000, 1), round(RMSE_p10.6*1000, 1)),
+             rbind(round(RMSE_p11.1*1000, 1), round(RMSE_p11.2*1000, 1), round(RMSE_p11.3*1000, 1), round(RMSE_p11.4*1000, 1), round(RMSE_p11.5*1000, 1), round(RMSE_p11.6*1000, 1)))
+
+
+
+
+MAE = cbind(rbind(round(MAE4.1*1000, 1), round(MAE4.2*1000, 1), round(MAE4.3*1000, 1), round(MAE4.4*1000, 1), round(MAE4.5*1000, 1), round(MAE4.6*1000, 1)), 
+             rbind(round(MAE6.1*1000, 1), round(MAE6.2*1000, 1), round(MAE6.3*1000, 1), round(MAE6.4*1000, 1), round(MAE6.5*1000, 1), round(MAE6.6*1000, 1)),
+             rbind(round(MAE1.1*1000, 1), round(MAE1.2*1000, 1), round(MAE1.3*1000, 1), round(MAE1.4*1000, 1), round(MAE1.5*1000, 1), round(MAE1.6*1000, 1)),
+             rbind(round(MAE2.1*1000, 1), round(MAE2.2*1000, 1), round(MAE2.3*1000, 1), round(MAE2.4*1000, 1), round(MAE2.5*1000, 1), round(MAE2.6*1000, 1)),
+             rbind(round(MAE5.1*1000, 1), round(MAE5.2*1000, 1), round(MAE5.3*1000, 1), round(MAE5.4*1000, 1), round(MAE5.5*1000, 1), round(MAE5.6*1000, 1)),
+             rbind(round(MAE9.1*1000, 1), round(MAE9.2*1000, 1), round(MAE9.3*1000, 1), round(MAE9.4*1000, 1), round(MAE9.5*1000, 1), round(MAE9.6*1000, 1)),
+             rbind(round(MAE10.1*1000, 1), round(MAE10.2*1000, 1), round(MAE10.3*1000, 1), round(MAE10.4*1000, 1), round(MAE10.5*1000, 1), round(MAE10.6*1000, 1)),
+             rbind(round(MAE11.1*1000, 1), round(MAE11.2*1000, 1), round(MAE11.3*1000, 1), round(MAE11.4*1000, 1), round(MAE11.5*1000, 1), round(MAE11.6*1000, 1)))
+            
+
+
+
+
+MAE_p = cbind(rbind(round(MAE_p4.1*1000, 1), round(MAE_p4.2*1000, 1), round(MAE_p4.3*1000, 1), round(MAE_p4.4*1000, 1), round(MAE_p4.5*1000, 1), round(MAE_p4.6*1000, 1)), 
+             rbind(round(MAE_p6.1*1000, 1), round(MAE_p6.2*1000, 1), round(MAE_p6.3*1000, 1), round(MAE_p6.4*1000, 1), round(MAE_p6.5*1000, 1), round(MAE_p6.6*1000, 1)),
+             rbind(round(MAE_p1.1*1000, 1), round(MAE_p1.2*1000, 1), round(MAE_p1.3*1000, 1), round(MAE_p1.4*1000, 1), round(MAE_p1.5*1000, 1), round(MAE_p1.6*1000, 1)),
+             rbind(round(MAE_p2.1*1000, 1), round(MAE_p2.2*1000, 1), round(MAE_p2.3*1000, 1), round(MAE_p2.4*1000, 1), round(MAE_p2.5*1000, 1), round(MAE_p2.6*1000, 1)),
+             rbind(round(MAE_p5.1*1000, 1), round(MAE_p5.2*1000, 1), round(MAE_p5.3*1000, 1), round(MAE_p5.4*1000, 1), round(MAE_p5.5*1000, 1), round(MAE_p5.6*1000, 1)),
+             rbind(round(MAE_p9.1*1000, 1), round(MAE_p9.2*1000, 1), round(MAE_p9.3*1000, 1), round(MAE_p9.4*1000, 1), round(MAE_p9.5*1000, 1), round(MAE_p9.6*1000, 1)),
+             rbind(round(MAE_p10.1*1000, 1), round(MAE_p10.2*1000, 1), round(MAE_p10.3*1000, 1), round(MAE_p10.4*1000, 1), round(MAE_p10.5*1000, 1), round(MAE_p10.6*1000, 1)),
+             rbind(round(MAE_p11.1*1000, 1), round(MAE_p11.2*1000, 1), round(MAE_p11.3*1000, 1), round(MAE_p11.4*1000, 1), round(MAE_p11.5*1000, 1), round(MAE_p11.6*1000, 1)))
+
+
+
+MBE = cbind(rbind(round(MBE4.1*1000, 1), round(MBE4.2*1000, 1), round(MBE4.3*1000, 1), round(MBE4.4*1000, 1), round(MBE4.5*1000, 1), round(MBE4.6*1000, 1)), 
+             rbind(round(MBE6.1*1000, 1), round(MBE6.2*1000, 1), round(MBE6.3*1000, 1), round(MBE6.4*1000, 1), round(MBE6.5*1000, 1), round(MBE6.6*1000, 1)),
+             rbind(round(MBE1.1*1000, 1), round(MBE1.2*1000, 1), round(MBE1.3*1000, 1), round(MBE1.4*1000, 1), round(MBE1.5*1000, 1), round(MBE1.6*1000, 1)),
+             rbind(round(MBE2.1*1000, 1), round(MBE2.2*1000, 1), round(MBE2.3*1000, 1), round(MBE2.4*1000, 1), round(MBE2.5*1000, 1), round(MBE2.6*1000, 1)),
+             rbind(round(MBE5.1*1000, 1), round(MBE5.2*1000, 1), round(MBE5.3*1000, 1), round(MBE5.4*1000, 1), round(MBE5.5*1000, 1), round(MBE5.6*1000, 1)),
+             rbind(round(MBE9.1*1000, 1), round(MBE9.2*1000, 1), round(MBE9.3*1000, 1), round(MBE9.4*1000, 1), round(MBE9.5*1000, 1), round(MBE9.6*1000, 1)),
+             rbind(round(MBE10.1*1000, 1), round(MBE10.2*1000, 1), round(MBE10.3*1000, 1), round(MBE10.4*1000, 1), round(MBE10.5*1000, 1), round(MBE10.6*1000, 1)),
+             rbind(round(MBE11.1*1000, 1), round(MBE11.2*1000, 1), round(MBE11.3*1000, 1), round(MBE11.4*1000, 1), round(MBE11.5*1000, 1), round(MBE11.6*1000, 1)))
+
+
+
+
+MBE_p = cbind(rbind(round(MBE_p4.1*1000, 1), round(MBE_p4.2*1000, 1), round(MBE_p4.3*1000, 1), round(MBE_p4.4*1000, 1), round(MBE_p4.5*1000, 1), round(MBE_p4.6*1000, 1)), 
+             rbind(round(MBE_p6.1*1000, 1), round(MBE_p6.2*1000, 1), round(MBE_p6.3*1000, 1), round(MBE_p6.4*1000, 1), round(MBE_p6.5*1000, 1), round(MBE_p6.6*1000, 1)),
+             rbind(round(MBE_p1.1*1000, 1), round(MBE_p1.2*1000, 1), round(MBE_p1.3*1000, 1), round(MBE_p1.4*1000, 1), round(MBE_p1.5*1000, 1), round(MBE_p1.6*1000, 1)),
+             rbind(round(MBE_p2.1*1000, 1), round(MBE_p2.2*1000, 1), round(MBE_p2.3*1000, 1), round(MBE_p2.4*1000, 1), round(MBE_p2.5*1000, 1), round(MBE_p2.6*1000, 1)),
+             rbind(round(MBE_p5.1*1000, 1), round(MBE_p5.2*1000, 1), round(MBE_p5.3*1000, 1), round(MBE_p5.4*1000, 1), round(MBE_p5.5*1000, 1), round(MBE_p5.6*1000, 1)),
+             rbind(round(MBE_p9.1*1000, 1), round(MBE_p9.2*1000, 1), round(MBE_p9.3*1000, 1), round(MBE_p9.4*1000, 1), round(MBE_p9.5*1000, 1), round(MBE_p9.6*1000, 1)),
+             rbind(round(MBE_p10.1*1000, 1), round(MBE_p10.2*1000, 1), round(MBE_p10.3*1000, 1), round(MBE_p10.4*1000, 1), round(MBE_p10.5*1000, 1), round(MBE_p10.6*1000, 1)),
+             rbind(round(MBE_p11.1*1000, 1), round(MBE_p11.2*1000, 1), round(MBE_p11.3*1000, 1), round(MBE_p11.4*1000, 1), round(MBE_p11.5*1000, 1), round(MBE_p11.6*1000, 1)))
+
+
+RMSE
+RMSE_p
+MAE
+MAE_p
+MBE
+MBE_p
+```
